@@ -7,6 +7,7 @@
 # @Software: Mahjong II
 # @Blog    :
 
+#majiangtool
 import pygame
 
 from color import *
