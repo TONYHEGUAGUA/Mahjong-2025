@@ -8,7 +8,7 @@
 # @Blog    :
 
 class Setting(object):
-    game_name = 'Chinese Standard Mahjong 2020'
+    game_name = 'Mahjong AI test 2025'
     win_w = 1280
     win_h = 640
     win_w_h_half = (win_w - win_h) // 2  # difference between window's width and height
