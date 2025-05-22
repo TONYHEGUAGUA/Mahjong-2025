@@ -314,5 +314,6 @@ class PlayerHuman(Player):
         # if self.hand:
         if hasattr(self, 'hand'):
             self.hand.refresh_screen()
-
+        pygame.event.clear()  # 新增：清空事件队列
+        self.clock.tick(Setting.cmd_FPS)
         return cmd
