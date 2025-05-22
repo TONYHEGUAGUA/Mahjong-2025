@@ -229,8 +229,11 @@ class PlayerHuman(Player):
             return True
         else:
             raise ValueError("exposed chow error cmd:", cmd)
-
+    #每次轮到用户抉择的时候会调用
     def waiting_4_cmd(self, allowed_cmd=[], choices=[], allow_sort=False, draw_screen=True):
+        key_left_lasttime = 0
+        key_right_lasttime = 0
+        print("In waiting cmd")
         if not allowed_cmd:
             raise ValueError("need at least one allowed_cmd:", allowed_cmd)
         default_cmd = allowed_cmd[0]
@@ -287,14 +290,19 @@ class PlayerHuman(Player):
                 changed = True
                 cmd = default_cmd
             if keys_pressed[pygame.K_LEFT]:
-                if choices:
+                print("left")
+                current_time = pygame.time.get_ticks()
+                if choices and (current_time - key_left_lasttime)>300:
+                    key_left_lasttime = current_time
                     changed = True
                     self.current_index -= 1
                     if self.current_index < 0:
                         self.current_index = len(choices) - 1
                     self.current_tiles = choices[self.current_index]
             if keys_pressed[pygame.K_RIGHT]:
-                if choices:
+                current_time = pygame.time.get_ticks()
+                if choices and (current_time - key_right_lasttime)>300:
+                    key_right_lasttime = current_time
                     changed = True
                     self.current_index += 1
                     if self.current_index >= len(choices):
