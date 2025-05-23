@@ -233,7 +233,6 @@ class PlayerHuman(Player):
     def waiting_4_cmd(self, allowed_cmd=[], choices=[], allow_sort=False, draw_screen=True):
         key_left_lasttime = 0
         key_right_lasttime = 0
-        print("In waiting cmd")
         if not allowed_cmd:
             raise ValueError("need at least one allowed_cmd:", allowed_cmd)
         default_cmd = allowed_cmd[0]
@@ -290,7 +289,6 @@ class PlayerHuman(Player):
                 changed = True
                 cmd = default_cmd
             if keys_pressed[pygame.K_LEFT]:
-                print("left")
                 current_time = pygame.time.get_ticks()
                 if choices and (current_time - key_left_lasttime)>300:
                     key_left_lasttime = current_time
