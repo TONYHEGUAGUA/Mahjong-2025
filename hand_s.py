@@ -199,6 +199,9 @@ class HandS(Hand):
         for player in self._players:
             if player != self._player:
                 player.draw_screen(state=state)
+            #不行，这样的player都是本人
+            #print("player = ",player)
+            #print("player.concealed_str = ",player.concealed_str)
         if self._player:
             self._player.draw_screen(state=state)
 
@@ -232,10 +235,11 @@ class HandS(Hand):
 
         have_winner = False
         while not have_winner and not self.out_of_tiles:
-
             if current_discard:
+                #print("current_discard = ",current_discard)
                 wind = current.position
                 player = current
+                #print("player = ",player)
                 for index in range(3):
                     # test for hu by other
                     if player.try_mahjong(current_discard):
@@ -723,6 +727,7 @@ class HandS(Hand):
 
     def waiting_return(self):
         allowed_cmd = ['discard']
+
         if not self._player:
             return
         self._player.waiting_4_cmd(allowed_cmd=allowed_cmd, draw_screen=False)
