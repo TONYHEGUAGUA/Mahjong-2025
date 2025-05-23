@@ -453,8 +453,11 @@ class Player(object):
         self.concealed_group.empty()
         left = Setting.concealed_left
         bottom = Setting.concealed_bottom
-
+        #print(self.concealed_str)
+        #这里index是手牌的索引，例如1-13 tile是手牌的字符，例如2万，4万，9万
+        #concealed_str包含当前手牌所有有的内容
         for index, tile in enumerate(self.concealed):
+            #print("index = ",index,"tile = ",tile)
             sprite = pygame.sprite.Sprite()
             if self._is_viewer or state == 'scoring':
                 image = pygame.image.load(Setting.tile_img_path + tile.img)
@@ -470,10 +473,11 @@ class Player(object):
             sprite.rect = rect
             sprite.rect.left = left
             sprite.rect.bottom = bottom
+            #self.current_tiles是当前选中的手牌
             if self.is_viewer and index in self.current_tiles:
                 sprite.rect.bottom += Setting.current_jump
             self.concealed_group.add(sprite)
-
+            #print(self.concealed_group)
             left += sprite.rect.width
 
     def draw_discard(self, state: str = ''):
@@ -664,7 +668,15 @@ class Player(object):
             sprite.rect = rect
 
     def draw_screen(self, state: str = ''):
-
+        #print("draw screen!")
+        #这里的concealed_str,exposed_str,desk_str都是当前的player的，没有包括对家的
+        # print("concealed:")
+        # print(self.concealed_str)
+        # print("exposed:")
+        # print(self.exposed_str)
+        # print("desk:")
+        # print(self.desk_str)
+        
         if not self._screen:
             return
 
