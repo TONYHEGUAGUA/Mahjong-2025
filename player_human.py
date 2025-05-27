@@ -249,8 +249,41 @@ class PlayerHuman(Player):
                 else:
                     continue
                 
-                print(f"{relation}的明牌:", " ".join(str(expose).replace(expose.outer_owner.nick, relation) for expose in player.exposed))
+                # 处理明牌显示，考虑outer_owner可能为None的情况
+                exposed_tiles = []
+                for expose in player.exposed:
+                    expose_str = str(expose)
+                    if expose.outer_owner:
+                        expose_str = expose_str.replace(expose.outer_owner.nick, relation)
+                    exposed_tiles.append(expose_str)
+                
+                print(f"{relation}的明牌:", " ".join(exposed_tiles))
                 print(f"{relation}打出的牌:", " ".join(str(tile) for tile in player.desk))
+        
+        # 打印当前可用的命令
+        cmd_descriptions = {
+            'chow': '吃',
+            'pong': '碰',
+            'kong': '杠',
+            'hu': '胡',
+            'cancel': '取消',
+            'discard': '打出',
+            'draw': '摸牌'
+        }
+        
+        print("\n当前可用命令:")
+        cmd_text = []
+        for cmd in allowed_cmd:
+            if cmd in cmd_descriptions:
+                if cmd == 'discard' and choices:
+                    cmd_text.append("左右键切换牌/Enter键打出")
+                else:
+                    key = {'chow': 'C', 'pong': 'P', 'kong': 'K', 'hu': 'H', 'cancel': 'ESC', 'draw': 'Space'}
+                    if cmd in key:
+                        cmd_text.append(f"{cmd_descriptions[cmd]}({key[cmd]})")
+                    else:
+                        cmd_text.append(cmd_descriptions[cmd])
+        print(" ".join(cmd_text))
         print()  # 空行分隔
 
         key_left_lasttime = 0
