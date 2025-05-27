@@ -16,6 +16,7 @@ from mahjong.mj_set import MjSet
 from mahjong.player import Player
 from mahjong.rule import Rule
 from mahjong.tile import Tile
+from mahjong.suit import Suit
 from setting import Setting
 
 
@@ -231,6 +232,27 @@ class PlayerHuman(Player):
             raise ValueError("exposed chow error cmd:", cmd)
     #每次轮到用户抉择的时候会调用
     def waiting_4_cmd(self, allowed_cmd=[], choices=[], allow_sort=False, draw_screen=True):
+        # 打印当前场上牌的情况
+        print("\n当前场上牌的情况:")
+        print("你的手牌:", " ".join(str(tile) for tile in self.concealed))
+        
+        # 打印其他玩家的明牌和打出的牌
+        for player in self.hand._players:
+            if player != self:
+                # 根据玩家位置确定是上家、对家还是下家
+                if player.position == Suit.get_before_wind(self.position):
+                    relation = "上家"
+                elif player.position == Suit.get_opposition_wind(self.position):
+                    relation = "对家"
+                elif player.position == Suit.get_next_wind(self.position):
+                    relation = "下家"
+                else:
+                    continue
+                
+                print(f"{relation}的明牌:", " ".join(str(expose).replace(expose.outer_owner.nick, relation) for expose in player.exposed))
+                print(f"{relation}打出的牌:", " ".join(str(tile) for tile in player.desk))
+        print()  # 空行分隔
+
         key_left_lasttime = 0
         key_right_lasttime = 0
         if not allowed_cmd:
