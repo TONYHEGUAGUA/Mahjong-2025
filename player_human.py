@@ -232,35 +232,10 @@ class PlayerHuman(Player):
             raise ValueError("exposed chow error cmd:", cmd)
     #每次轮到用户抉择的时候会调用
     def waiting_4_cmd(self, allowed_cmd=[], choices=[], allow_sort=False, draw_screen=True):
-        # 打印当前场上牌的情况
-        print("\n当前场上牌的情况:")
-        print("你的手牌:", " ".join(str(tile) for tile in self.concealed))
+        # 使用新的方法打印游戏状态
+        self.print_game_state()
         
-        # 打印其他玩家的明牌和打出的牌
-        for player in self.hand._players:
-            if player != self:
-                # 根据玩家位置确定是上家、对家还是下家
-                if player.position == Suit.get_before_wind(self.position):
-                    relation = "上家"
-                elif player.position == Suit.get_opposition_wind(self.position):
-                    relation = "对家"
-                elif player.position == Suit.get_next_wind(self.position):
-                    relation = "下家"
-                else:
-                    continue
-                
-                # 处理明牌显示，考虑outer_owner可能为None的情况
-                exposed_tiles = []
-                for expose in player.exposed:
-                    expose_str = str(expose)
-                    if expose.outer_owner:
-                        expose_str = expose_str.replace(expose.outer_owner.nick, relation)
-                    exposed_tiles.append(expose_str)
-                
-                print(f"{relation}的明牌:", " ".join(exposed_tiles))
-                print(f"{relation}打出的牌:", " ".join(str(tile) for tile in player.desk))
-        
-        # 打印当前可用的命令
+        # 打印当前可用命令
         cmd_descriptions = {
             'chow': '吃',
             'pong': '碰',
@@ -378,3 +353,53 @@ class PlayerHuman(Player):
         pygame.event.clear()  # 新增：清空事件队列
         self.clock.tick(Setting.cmd_FPS)
         return cmd
+
+    def get_game_state_dict(self):
+        """获取并返回游戏状态的字典格式"""
+        game_state = {
+            "自己的手牌": [str(tile) for tile in self.concealed],
+            "其他玩家": {}
+        }
+        
+        # 遍历其他玩家
+        for player in self.hand._players:
+            if player != self:
+                # 确定玩家关系
+                if player.position == Suit.get_before_wind(self.position):
+                    relation = "上家"
+                elif player.position == Suit.get_opposition_wind(self.position):
+                    relation = "对家"
+                elif player.position == Suit.get_next_wind(self.position):
+                    relation = "下家"
+                else:
+                    continue
+                
+                # 处理该玩家的信息
+                player_info = {
+                    "明牌": [],
+                    "打出的牌": [str(tile) for tile in player.desk]
+                }
+                
+                # 处理明牌
+                for expose in player.exposed:
+                    expose_str = str(expose)
+                    if expose.outer_owner:
+                        expose_str = expose_str.replace(expose.outer_owner.nick, relation)
+                    player_info["明牌"].append(expose_str)
+                
+                game_state["其他玩家"][relation] = player_info
+        
+        return game_state
+
+    def print_game_state(self):
+        """打印游戏状态信息"""
+        game_state = self.get_game_state_dict()
+        
+        print("\n当前游戏状态:")
+        print("自己的手牌:", game_state["自己的手牌"])
+        
+        for relation, info in game_state["其他玩家"].items():
+            print(f"\n{relation}:")
+            print(f"  明牌:", info["明牌"])
+            print(f"  打出的牌:", info["打出的牌"])
+        print()  # 空行分隔
