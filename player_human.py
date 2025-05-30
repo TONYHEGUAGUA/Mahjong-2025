@@ -8,8 +8,15 @@
 # @Blog    :
 
 import sys
-
 import pygame
+import requests
+import json
+import os
+import asyncio
+import aiohttp
+import threading
+from typing import Dict, List, Any
+from concurrent.futures import ThreadPoolExecutor
 
 from mahjong.mj_math import MjMath
 from mahjong.mj_set import MjSet
@@ -21,7 +28,7 @@ from setting import Setting
 
 
 class PlayerHuman(Player):
-    __slots__ = ('cmd', 'hand', 'waiting_group', 'waiting_cmd')
+    __slots__ = ('cmd', 'hand', 'waiting_group', 'waiting_cmd', 'api_processor', 'last_hand_state', 'cached_ai_suggestion', 'executor')
 
     def __init__(self, nick="Eric", coin: int = 0,
                  is_viewer: bool = False, viewer_position: str = '东',
@@ -32,6 +39,22 @@ class PlayerHuman(Player):
         self.cmd = ''
         self.waiting_cmd = []
         self.waiting_group = pygame.sprite.Group()
+        self.last_hand_state = None
+        self.cached_ai_suggestion = None
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        
+        # Initialize API processor with default token
+        api_token = os.getenv('DEEPSEEK_API_KEY', 'sk-0238967eaa304084a7f85c201ab994aa')
+        self.api_processor = None
+        try:
+            self.api_processor = DeepseekMahjongAI(
+                api_token=api_token,
+                base_url="https://api.deepseek.com/v1/chat/completions",
+                model="deepseek-chat"
+            )
+        except Exception as e:
+            print(f"Warning: Failed to initialize AI processor: {e}")
+            self.api_processor = None
 
     def draw(self, mj_set: MjSet):
         return super().draw(mj_set)
@@ -391,6 +414,42 @@ class PlayerHuman(Player):
         
         return game_state
 
+    def get_ai_suggestion(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        使用 Deepseek API 获取 AI 建议
+        """
+        if not self.api_processor:
+            return {"error": "No API processor available"}
+
+        return self.api_processor.get_suggestion_sync(game_state)
+
+    def print_ai_suggestion(self, ai_suggestion: Dict[str, Any]):
+        """打印AI建议"""
+        if not ai_suggestion:
+            return
+            
+        if "error" in ai_suggestion:
+            print("\nAI建议获取失败:", ai_suggestion["error"])
+            return
+
+        print("\n=== AI 策略建议 ===")
+        
+        if "actions" in ai_suggestion and ai_suggestion["actions"]:
+            print("\n可能的行动建议:")
+            for action in ai_suggestion["actions"]:
+                print(f"- {action['action']}: 权重 {action['weight']}")
+        
+        if "discard_suggestions" in ai_suggestion and ai_suggestion["discard_suggestions"]:
+            print("\n打牌建议:")
+            for suggestion in ai_suggestion["discard_suggestions"]:
+                print(f"- {suggestion['tile']}: 权重 {suggestion['weight']}")
+        
+        if "strategy_analysis" in ai_suggestion and ai_suggestion["strategy_analysis"]:
+            print("\n策略分析:")
+            print(ai_suggestion.get("strategy_analysis", "无分析"))
+        
+        print("\n==================")
+
     def print_game_state(self):
         """打印游戏状态信息"""
         game_state = self.get_game_state_dict()
@@ -403,3 +462,270 @@ class PlayerHuman(Player):
             print(f"  明牌:", info["明牌"])
             print(f"  打出的牌:", info["打出的牌"])
         print()  # 空行分隔
+
+        # 检查是否需要更新AI建议
+        if self.should_update_ai_suggestion():
+            print("检测到状态变化，更新AI建议...")  # Debug信息
+            self.update_ai_suggestion(game_state)
+        elif self.cached_ai_suggestion:
+            print("使用缓存的AI建议...")  # Debug信息
+            self.print_ai_suggestion(self.cached_ai_suggestion)
+
+    def get_hand_state(self):
+        """获取当前手牌状态的哈希值，用于判断手牌是否改变"""
+        return (
+            tuple(sorted(str(tile) for tile in self.concealed)),
+            tuple((str(expose) for expose in self.exposed)),
+            tuple((player.nick, tuple(str(tile) for tile in player.desk)) for player in self.hand._players if player != self)
+        )
+
+    def should_update_ai_suggestion(self):
+        """判断是否需要更新AI建议"""
+        current_state = self.get_hand_state()
+        if self.last_hand_state != current_state:
+            self.last_hand_state = current_state
+            return True
+        return False
+
+    def sort_concealed(self):
+        """重写排序方法，避免触发AI建议更新"""
+        old_state = self.get_hand_state()
+        super().sort_concealed()
+        self.last_hand_state = old_state  # 保持状态不变，因为排序不需要更新AI建议
+
+    def update_ai_suggestion(self, game_state):
+        """在新线程中更新AI建议"""
+        def get_suggestion_sync():
+            try:
+                print("开始获取AI建议...")  # Debug信息
+                if not self.api_processor:
+                    print("API处理器未初始化")  # Debug信息
+                    return None
+                
+                # 添加当前可用命令到游戏状态
+                game_state['available_commands'] = self.waiting_cmd
+                
+                # 使用同步方式获取建议
+                suggestion = self.api_processor.get_suggestion_sync(game_state)
+                print(f"获取到AI建议: {suggestion}")  # Debug信息
+                
+                if suggestion:
+                    self.cached_ai_suggestion = suggestion
+                    self.print_ai_suggestion(suggestion)
+                return suggestion
+            except Exception as e:
+                print(f"获取AI建议时出错: {str(e)}")  # Debug信息
+                return None
+
+        # 在线程池中执行
+        self.executor.submit(get_suggestion_sync)
+
+
+class DeepseekMahjongAI:
+    def __init__(self, api_token: str, base_url: str, model: str):
+        if not api_token:
+            raise ValueError("API token is required")
+        self.api_token = api_token
+        self.base_url = base_url
+        self.model = model
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_token}"
+        }
+        # 设置重试次数和超时
+        self.max_retries = 3
+        self.timeout = 30
+
+    def get_suggestion_sync(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
+        """同步获取AI建议"""
+        try:
+            import requests
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+            
+            # 创建带重试机制的session
+            session = requests.Session()
+            retry_strategy = Retry(
+                total=self.max_retries,
+                backoff_factor=1,
+                status_forcelist=[429, 500, 502, 503, 504],
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            session.mount("https://", adapter)
+            
+            prompt = self._create_prompt(game_state)
+            data = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7,
+                "max_tokens": 800
+            }
+            
+            print(f"发送API请求到 {self.base_url}...")  # Debug信息
+            response = session.post(
+                self.base_url,
+                headers=self.headers,
+                json=data,
+                timeout=(5, self.timeout)  # (连接超时, 读取超时)
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            content = result["choices"][0]["message"]["content"]
+            print(f"成功收到API响应")  # Debug信息
+            
+            # 解析返回的格式化文本
+            return self._parse_response(content)
+            
+        except requests.exceptions.ConnectTimeout:
+            print("连接超时，请检查网络连接")
+            return {"error": "Connection timeout, please check your network"}
+        except requests.exceptions.ReadTimeout:
+            print("读取超时，服务器响应时间过长")
+            return {"error": "Read timeout, server response took too long"}
+        except requests.exceptions.ConnectionError:
+            print("连接错误，请检查网络连接或API地址是否正确")
+            return {"error": "Connection error, please check your network or API endpoint"}
+        except Exception as e:
+            print(f"API请求出错: {str(e)}")
+            return {"error": f"API request failed: {str(e)}"}
+
+    def _create_prompt(self, game_state: Dict[str, Any]) -> str:
+        """创建提示信息"""
+        # 获取当前可用命令
+        available_commands = game_state.get('available_commands', [])
+        special_commands = {'pong', 'chow', 'kong', 'hu'}
+        has_special_command = any(cmd in special_commands for cmd in available_commands)
+        
+        base_prompt = f"""
+当前状态：
+我的手牌: {game_state['自己的手牌']}
+
+其他玩家情况：
+{json.dumps(game_state['其他玩家'], ensure_ascii=False, indent=2)}
+
+当前可用命令: {', '.join(available_commands)}
+"""
+        
+        # 根据可用命令调整提示语
+        if has_special_command:
+            prompt_language = """
+请根据以下内容，分析是否应该执行当前可用的动作（吃/碰/杠/胡），严格按照以下格式回答：
+
+A. 当前动作建议：
+   - 动作: [可用命令中的动作], 权重: [0-100的数字]
+   - 动作: 取消, 权重: [0-100的数字]
+
+B. 策略分析：
+   [分析是否应该执行当前动作的原因]
+"""
+        else:
+            prompt_language = """
+请分析当前局势，建议应该打出哪些牌，严格按照以下格式回答：
+
+A. 打牌建议（按权重从高到低排序）：
+   - 牌: [牌名], 权重: [0-100的数字]
+
+B. 策略分析：
+   [简短的策略分析文本，解释打牌建议的原因]
+"""
+        return base_prompt + prompt_language
+
+    def _parse_response(self, content: str) -> Dict[str, Any]:
+        """解析API响应"""
+        try:
+            actions = []
+            discard_suggestions = []
+            strategy_analysis = ""
+            
+            # 分割AB或ABC部分
+            parts = content.split('\n')
+            current_section = None
+            
+            for line in parts:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if line.startswith('A.'):
+                    if '打牌建议' in line:
+                        current_section = 'discard'
+                    else:
+                        current_section = 'actions'
+                    continue
+                elif line.startswith('B.'):
+                    if current_section == 'discard':
+                        current_section = 'strategy'
+                    else:
+                        current_section = 'strategy'
+                    continue
+                    
+                if current_section == 'actions' and line.startswith('-'):
+                    if '权重:' in line:
+                        action = line.split('动作:')[1].split('权重:')[0].strip()
+                        weight = int(line.split('权重:')[1].strip())
+                        actions.append({"action": action, "weight": weight})
+                elif current_section == 'discard' and line.startswith('-'):
+                    if '权重:' in line:
+                        tile = line.split('牌:')[1].split('权重:')[0].strip()
+                        weight = int(line.split('权重:')[1].strip())
+                        discard_suggestions.append({"tile": tile, "weight": weight})
+                elif current_section == 'strategy':
+                    strategy_analysis += line + " "
+            
+            return {
+                "actions": actions,
+                "discard_suggestions": discard_suggestions,
+                "strategy_analysis": strategy_analysis.strip()
+            }
+        except Exception as e:
+            print(f"解析响应时出错: {str(e)}")  # Debug信息
+            print(f"原始响应内容: {content}")  # Debug信息
+            return {"error": f"Failed to parse response: {str(e)}"}
+
+    def print_ai_suggestion(self, ai_suggestion: Dict[str, Any]):
+        """打印AI建议"""
+        if not ai_suggestion:
+            return
+            
+        if "error" in ai_suggestion:
+            print("\nAI建议获取失败:", ai_suggestion["error"])
+            return
+
+        print("\n=== AI 策略建议 ===")
+        
+        # 只在有特殊命令时显示行动建议
+        if ai_suggestion.get("actions"):
+            print("\n当前动作建议:")
+            for action in ai_suggestion["actions"]:
+                print(f"- {action['action']}: 权重 {action['weight']}")
+        
+        # 只在普通打牌时显示打牌建议
+        if ai_suggestion.get("discard_suggestions"):
+            print("\n打牌建议:")
+            for suggestion in ai_suggestion["discard_suggestions"]:
+                print(f"- {suggestion['tile']}: 权重 {suggestion['weight']}")
+        
+        if ai_suggestion.get("strategy_analysis"):
+            print("\n策略分析:")
+            print(ai_suggestion["strategy_analysis"])
+        
+        print("\n==================")
+
+    def print_game_state(self):
+        """打印游戏状态信息"""
+        game_state = self.get_game_state_dict()
+        
+        print("\n当前游戏状态:")
+        print("自己的手牌:", game_state["自己的手牌"])
+        
+        for relation, info in game_state["其他玩家"].items():
+            print(f"\n{relation}:")
+            print(f"  明牌:", info["明牌"])
+            print(f"  打出的牌:", info["打出的牌"])
+        print()  # 空行分隔
+
+        # 获取并显示AI建议（如果可用）
+        if self.api_processor:
+            ai_suggestion = self.api_processor.get_suggestion_sync(game_state)
+            self.print_ai_suggestion(ai_suggestion)

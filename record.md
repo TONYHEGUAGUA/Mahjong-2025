@@ -14,3 +14,5 @@ for player in self._players:
             #print("player.concealed_str = ",player.concealed_str)
 
 这样好像可以便利所有player
+
+打牌建议，行动建议。
