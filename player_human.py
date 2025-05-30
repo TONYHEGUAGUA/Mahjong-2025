@@ -15,6 +15,7 @@ import os
 import asyncio
 import aiohttp
 import threading
+import time
 from typing import Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 
@@ -28,7 +29,7 @@ from setting import Setting
 
 
 class PlayerHuman(Player):
-    __slots__ = ('cmd', 'hand', 'waiting_group', 'waiting_cmd', 'api_processor', 'last_hand_state', 'cached_ai_suggestion', 'executor')
+    __slots__ = ('cmd', 'hand', 'waiting_group', 'waiting_cmd', 'api_processor', 'current_request_id', 'cached_ai_suggestion', 'executor', '_last_game_state')
 
     def __init__(self, nick="Eric", coin: int = 0,
                  is_viewer: bool = False, viewer_position: str = '东',
@@ -39,9 +40,10 @@ class PlayerHuman(Player):
         self.cmd = ''
         self.waiting_cmd = []
         self.waiting_group = pygame.sprite.Group()
-        self.last_hand_state = None
         self.cached_ai_suggestion = None
+        self.current_request_id = None
         self.executor = ThreadPoolExecutor(max_workers=1)
+        self._last_game_state = None  # 添加游戏状态缓存
         
         # Initialize API processor with default token
         api_token = os.getenv('DEEPSEEK_API_KEY', 'sk-0238967eaa304084a7f85c201ab994aa')
@@ -60,6 +62,9 @@ class PlayerHuman(Player):
         return super().draw(mj_set)
 
     def decide_discard(self) -> Tile:
+        # 在选择打牌时更新AI建议
+        self.update_ai_suggestion(self.get_game_state_dict())
+        
         self.current_index = len(self._concealed) - 1
         choices = [[index] for index, tile in enumerate(self._concealed)]
         self.current_tiles = choices[self.current_index]
@@ -69,7 +74,11 @@ class PlayerHuman(Player):
         self.waiting_4_cmd(allowed_cmd=allowed_cmd, choices=choices, allow_sort=True)
         tile = self._concealed[self.current_index]
         self.current_tiles = []
-        # self.sort_concealed()
+        
+        # 清除所有缓存
+        self.cached_ai_suggestion = None
+        self.current_request_id = None
+        self._last_game_state = None
         return tile
 
     def draw_waiting_cmd(self):
@@ -93,10 +102,125 @@ class PlayerHuman(Player):
             left += rect.w + Setting.waiting_img_span
 
     def draw_screen(self, state: str = ''):
+        """重写draw_screen方法以确保AI面板始终显示"""
         super().draw_screen(state=state)
         if self.screen:
+            # 确保在每次屏幕刷新时都重绘AI面板
             self.draw_waiting_cmd()
             self.waiting_group.draw(self.screen)
+            self.draw_ai_panel()
+            # 强制更新显示
+            pygame.display.flip()
+
+    def draw_ai_panel(self):
+        """Draw AI status and suggestions panel on the right side of the screen"""
+        if not self.screen:
+            return
+
+        # Create font objects
+        title_font = pygame.font.Font(Setting.font, Setting.normal_font_size + 4)
+        font = pygame.font.Font(Setting.font, Setting.normal_font_size)
+        
+        # Draw panel background
+        panel_rect = pygame.Rect(Setting.ai_panel_left, Setting.ai_panel_top, 
+                               Setting.ai_panel_width, Setting.win_h - Setting.ai_panel_top * 2)
+        pygame.draw.rect(self.screen, (0, 0, 0), panel_rect)  # Black background
+        pygame.draw.rect(self.screen, Setting.info_color, panel_rect, 2)  # Gold border
+
+        current_y = Setting.ai_panel_top + Setting.ai_panel_padding
+
+        # Draw title
+        title = title_font.render("AI 分析面板", True, Setting.info_color)
+        title_rect = title.get_rect(centerx=panel_rect.centerx, top=current_y)
+        self.screen.blit(title, title_rect)
+        current_y += Setting.ai_panel_line_height * 1.5
+
+        # Draw status
+        if not self.api_processor:
+            status_text = "AI系统未初始化"
+            status_color = (255, 0, 0)  # Red
+        elif not self.current_request_id:
+            status_text = "等待操作..."
+            status_color = (128, 128, 128)  # Gray
+        elif not self.cached_ai_suggestion:
+            status_text = "正在获取AI建议..."
+            status_color = (255, 255, 0)  # Yellow
+        else:
+            status_text = "AI建议已就绪"
+            status_color = (0, 255, 0)  # Green
+
+        status = font.render(status_text, True, status_color)
+        status_rect = status.get_rect(centerx=panel_rect.centerx, top=current_y)
+        self.screen.blit(status, status_rect)
+        current_y += Setting.ai_panel_line_height + Setting.ai_panel_section_spacing
+
+        # 只在有建议时显示内容
+        if self.cached_ai_suggestion and "error" not in self.cached_ai_suggestion:
+            # Draw actions if available
+            if "actions" in self.cached_ai_suggestion and self.cached_ai_suggestion["actions"]:
+                current_y = self._draw_section_title(font, "可选动作:", current_y, panel_rect.left)
+                
+                for action in self.cached_ai_suggestion["actions"]:
+                    text = f"• {action['action']}: {action['weight']}"
+                    current_y = self._draw_text_line(font, text, current_y, panel_rect.left)
+                current_y += Setting.ai_panel_section_spacing
+
+            # Draw discard suggestions if available
+            if "discard_suggestions" in self.cached_ai_suggestion and self.cached_ai_suggestion["discard_suggestions"]:
+                current_y = self._draw_section_title(font, "打牌建议:", current_y, panel_rect.left)
+                
+                for suggestion in self.cached_ai_suggestion["discard_suggestions"]:
+                    text = f"• {suggestion['tile']}: {suggestion['weight']}"
+                    current_y = self._draw_text_line(font, text, current_y, panel_rect.left)
+                current_y += Setting.ai_panel_section_spacing
+
+            # Draw strategy analysis if available
+            if "strategy_analysis" in self.cached_ai_suggestion and self.cached_ai_suggestion["strategy_analysis"]:
+                current_y = self._draw_section_title(font, "策略分析:", current_y, panel_rect.left)
+                
+                strategy_text = self.cached_ai_suggestion["strategy_analysis"]
+                wrapped_lines = self._wrap_text(strategy_text, font, Setting.ai_panel_width - Setting.ai_panel_padding * 2)
+                
+                for line in wrapped_lines:
+                    current_y = self._draw_text_line(font, line, current_y, panel_rect.left)
+
+    def _draw_section_title(self, font, title, y, left):
+        """Helper method to draw section titles"""
+        title_surf = font.render(title, True, Setting.info_color)
+        self.screen.blit(title_surf, (left + Setting.ai_panel_padding, y))
+        return y + Setting.ai_panel_line_height
+
+    def _draw_text_line(self, font, text, y, left):
+        """Helper method to draw text lines"""
+        text_surf = font.render(text, True, Setting.ai_text_color)
+        self.screen.blit(text_surf, (left + Setting.ai_panel_padding * 2, y))
+        return y + Setting.ai_panel_line_height
+
+    def _wrap_text(self, text, font, max_width):
+        """Helper method to wrap text to fit within the panel width"""
+        words = text.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            current_line.append(word)
+            text_width = font.size(' '.join(current_line))[0]
+            
+            if text_width > max_width:
+                if len(current_line) == 1:
+                    # If single word is too long, split it
+                    lines.append(current_line[0])
+                    current_line = []
+                else:
+                    # Remove last word and add line
+                    current_line.pop()
+                    lines.append(' '.join(current_line))
+                    current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return lines
 
     def try_mahjong(self, tile=None) -> bool:
         test = self.concealed[:]
@@ -253,37 +377,30 @@ class PlayerHuman(Player):
             return True
         else:
             raise ValueError("exposed chow error cmd:", cmd)
-    #每次轮到用户抉择的时候会调用
+
     def waiting_4_cmd(self, allowed_cmd=[], choices=[], allow_sort=False, draw_screen=True):
+        # 只在需要玩家操作的关键时刻获取AI建议
+        need_ai = False
+        
+        if 'discard' in allowed_cmd:  # 轮到自己打牌
+            need_ai = True
+        elif 'hu' in allowed_cmd:  # 可以胡牌
+            need_ai = True
+        elif any(cmd in ['pong', 'kong', 'chow'] for cmd in allowed_cmd):  # 可以吃碰杠
+            # 如果可以吃碰杠，说明一定是响应其他玩家的动作
+            need_ai = True
+        
+        if need_ai:
+            self.update_ai_suggestion(self.get_game_state_dict())
+        else:
+            # 如果不需要AI建议，清除缓存
+            self.cached_ai_suggestion = None
+            self.current_request_id = None
+            self._last_game_state = None
+        
         # 使用新的方法打印游戏状态
         self.print_game_state()
         
-        # 打印当前可用命令
-        cmd_descriptions = {
-            'chow': '吃',
-            'pong': '碰',
-            'kong': '杠',
-            'hu': '胡',
-            'cancel': '取消',
-            'discard': '打出',
-            'draw': '摸牌'
-        }
-        
-        print("\n当前可用命令:")
-        cmd_text = []
-        for cmd in allowed_cmd:
-            if cmd in cmd_descriptions:
-                if cmd == 'discard' and choices:
-                    cmd_text.append("左右键切换牌/Enter键打出")
-                else:
-                    key = {'chow': 'C', 'pong': 'P', 'kong': 'K', 'hu': 'H', 'cancel': 'ESC', 'draw': 'Space'}
-                    if cmd in key:
-                        cmd_text.append(f"{cmd_descriptions[cmd]}({key[cmd]})")
-                    else:
-                        cmd_text.append(cmd_descriptions[cmd])
-        print(" ".join(cmd_text))
-        print()  # 空行分隔
-
         key_left_lasttime = 0
         key_right_lasttime = 0
         if not allowed_cmd:
@@ -297,7 +414,6 @@ class PlayerHuman(Player):
 
         # refresh the screen
         self.waiting_cmd = allowed_cmd
-        # self.waiting_cmd = ['hu', 'cancel']  # test for cmd buttons
         if draw_screen:
             self.draw_screen()
             if self.hand:
@@ -482,8 +598,9 @@ class PlayerHuman(Player):
     def should_update_ai_suggestion(self):
         """判断是否需要更新AI建议"""
         current_state = self.get_hand_state()
-        if self.last_hand_state != current_state:
-            self.last_hand_state = current_state
+        if self.current_request_id:
+            print("检测到状态变化，更新AI建议...")  # Debug信息
+            self.update_ai_suggestion(self.get_game_state_dict())
             return True
         return False
 
@@ -491,31 +608,70 @@ class PlayerHuman(Player):
         """重写排序方法，避免触发AI建议更新"""
         old_state = self.get_hand_state()
         super().sort_concealed()
-        self.last_hand_state = old_state  # 保持状态不变，因为排序不需要更新AI建议
+        self.current_request_id = None  # 清除当前请求ID
 
     def update_ai_suggestion(self, game_state):
         """在新线程中更新AI建议"""
+        # 检查游戏状态是否真的改变
+        current_state_str = json.dumps(game_state, sort_keys=True)
+        if self._last_game_state == current_state_str:
+            return
+        
+        # 更新状态缓存
+        self._last_game_state = current_state_str
+        
+        # 取消之前的请求（如果有）
+        if self.current_request_id:
+            print("检测到新的状态，取消旧的请求")
+            self.current_request_id = None
+            self.cached_ai_suggestion = None
+
+        # 生成新的请求ID
+        request_id = id(game_state)
+        self.current_request_id = request_id
+
         def get_suggestion_sync():
             try:
-                print("开始获取AI建议...")  # Debug信息
-                if not self.api_processor:
-                    print("API处理器未初始化")  # Debug信息
+                # 检查请求是否仍然有效
+                if self.current_request_id != request_id:
                     return None
                 
-                # 添加当前可用命令到游戏状态
+                print("开始获取AI建议...")
+                if not self.api_processor:
+                    print("API处理器未初始化")
+                    return None
+                
                 game_state['available_commands'] = self.waiting_cmd
                 
-                # 使用同步方式获取建议
-                suggestion = self.api_processor.get_suggestion_sync(game_state)
-                print(f"获取到AI建议: {suggestion}")  # Debug信息
+                # 再次检查请求是否有效
+                if self.current_request_id != request_id:
+                    return None
                 
-                if suggestion:
+                suggestion = self.api_processor.get_suggestion_sync(game_state)
+                
+                # 如果是连接错误，等待一段时间后重试
+                if suggestion and "error" in suggestion and "Connection" in suggestion["error"]:
+                    print("连接错误，等待后重试...")
+                    time.sleep(2)  # 等待2秒
+                    if self.current_request_id == request_id:  # 确保请求仍然有效
+                        suggestion = self.api_processor.get_suggestion_sync(game_state)
+                
+                # 最后一次检查请求是否有效
+                if self.current_request_id != request_id:
+                    return None
+                
+                if suggestion and "error" not in suggestion:
                     self.cached_ai_suggestion = suggestion
-                    self.print_ai_suggestion(suggestion)
+                    if self.screen and self.hand:
+                        self.hand.refresh_screen()
                 return suggestion
             except Exception as e:
-                print(f"获取AI建议时出错: {str(e)}")  # Debug信息
+                print(f"获取AI建议时出错: {str(e)}")
                 return None
+            finally:
+                # 只有当这是最新的请求时才清除请求ID
+                if self.current_request_id == request_id:
+                    self.current_request_id = None
 
         # 在线程池中执行
         self.executor.submit(get_suggestion_sync)
@@ -535,24 +691,26 @@ class DeepseekMahjongAI:
         # 设置重试次数和超时
         self.max_retries = 3
         self.timeout = 30
+        self.retry_delay = 1  # 重试延迟（秒）
+        self.session = self._create_session()
+
+    def _create_session(self):
+        """创建带有重试机制的session"""
+        session = requests.Session()
+        retry_strategy = requests.adapters.Retry(
+            total=self.max_retries,
+            backoff_factor=self.retry_delay,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST"]
+        )
+        adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        session.headers.update(self.headers)
+        return session
 
     def get_suggestion_sync(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
         """同步获取AI建议"""
         try:
-            import requests
-            from requests.adapters import HTTPAdapter
-            from urllib3.util.retry import Retry
-            
-            # 创建带重试机制的session
-            session = requests.Session()
-            retry_strategy = Retry(
-                total=self.max_retries,
-                backoff_factor=1,
-                status_forcelist=[429, 500, 502, 503, 504],
-            )
-            adapter = HTTPAdapter(max_retries=retry_strategy)
-            session.mount("https://", adapter)
-            
             prompt = self._create_prompt(game_state)
             data = {
                 "model": self.model,
@@ -561,31 +719,48 @@ class DeepseekMahjongAI:
                 "max_tokens": 800
             }
             
-            print(f"发送API请求到 {self.base_url}...")  # Debug信息
-            response = session.post(
-                self.base_url,
-                headers=self.headers,
-                json=data,
-                timeout=(5, self.timeout)  # (连接超时, 读取超时)
-            )
-            response.raise_for_status()
-            result = response.json()
+            print(f"发送API请求到 {self.base_url}...")
             
-            content = result["choices"][0]["message"]["content"]
-            print(f"成功收到API响应")  # Debug信息
-            
-            # 解析返回的格式化文本
-            return self._parse_response(content)
-            
+            try:
+                response = self.session.post(
+                    self.base_url,
+                    json=data,
+                    timeout=(5, self.timeout)  # (连接超时, 读取超时)
+                )
+                response.raise_for_status()
+                result = response.json()
+                print("成功收到API响应")
+                
+                content = result["choices"][0]["message"]["content"]
+                return self._parse_response(content)
+                
+            except requests.exceptions.RequestException as e:
+                # 如果session中的重试机制失败，尝试重新创建session
+                print(f"API请求失败，尝试重新创建session: {str(e)}")
+                self.session = self._create_session()
+                
+                # 最后一次尝试
+                response = self.session.post(
+                    self.base_url,
+                    json=data,
+                    timeout=(5, self.timeout)
+                )
+                response.raise_for_status()
+                result = response.json()
+                print("重试成功收到API响应")
+                
+                content = result["choices"][0]["message"]["content"]
+                return self._parse_response(content)
+                
         except requests.exceptions.ConnectTimeout:
             print("连接超时，请检查网络连接")
-            return {"error": "Connection timeout, please check your network"}
+            return {"error": "Connection timeout"}
         except requests.exceptions.ReadTimeout:
             print("读取超时，服务器响应时间过长")
-            return {"error": "Read timeout, server response took too long"}
+            return {"error": "Read timeout"}
         except requests.exceptions.ConnectionError:
-            print("连接错误，请检查网络连接或API地址是否正确")
-            return {"error": "Connection error, please check your network or API endpoint"}
+            print("连接错误，请检查网络连接")
+            return {"error": "Connection error"}
         except Exception as e:
             print(f"API请求出错: {str(e)}")
             return {"error": f"API request failed: {str(e)}"}

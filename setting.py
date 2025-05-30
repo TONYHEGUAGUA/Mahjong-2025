@@ -9,11 +9,21 @@
 
 class Setting(object):
     game_name = 'Mahjong AI test 2025'
-    win_w = 1280
+    win_w = 1600
     win_h = 640
     win_w_h_half = (win_w - win_h) // 2  # difference between window's width and height
     FPS = 5
     cmd_FPS = 60
+
+    # AI Panel settings
+    ai_panel_width = 320  # Increased width
+    ai_panel_left = win_w - ai_panel_width - 20
+    ai_panel_top = 20  # Moved up slightly
+    ai_panel_line_height = 30  # Increased line height
+    ai_panel_padding = 15  # Added padding
+    ai_panel_section_spacing = 20  # Added spacing between sections
+    ai_text_color = (255, 255, 255)  # White color for AI text
+    ai_panel_max_line_length = 38  # Maximum characters per line
 
     # game rule
     game_flowers = True
