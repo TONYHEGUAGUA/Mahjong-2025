@@ -105,11 +105,15 @@ class PlayerHuman(Player):
         """重写draw_screen方法以确保AI面板始终显示"""
         super().draw_screen(state=state)
         if self.screen:
-            # 确保在每次屏幕刷新时都重绘AI面板
             self.draw_waiting_cmd()
             self.waiting_group.draw(self.screen)
-            self.draw_ai_panel()
-            # 强制更新显示
+            
+            # 检查C键是否被按下
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_c]:
+                print("按键C触发")  # 在终端打印
+                self.draw_ai_panel()
+            
             pygame.display.flip()
 
     def draw_ai_panel(self):
